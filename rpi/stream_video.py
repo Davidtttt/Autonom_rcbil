@@ -5,6 +5,12 @@ import socket
 import threading
 from picamera2 import Picamera2
 from utils import server_address, command_address  # Lägg till command_address t.ex. ('192.168.X.X', 8001)
+import RPi.GPIO as GPIO
+
+GPIO_RIGHT_A = 24
+GPIO_RIGHT_B = 23
+GPIO_LEFT_A = 25
+GPIO_LEFT_B = 27
 
 # ========== FUNKTION: Kör kommandomottagare ==========
 def listen_for_commands(cmd_socket):
@@ -14,6 +20,36 @@ def listen_for_commands(cmd_socket):
             if not cmd:
                 break
             print(f"[COMMAND RECEIVED]: {cmd}")
+            if cmd == b'1':
+                # Forwards
+                GPIO.output(GPIO_LEFT_A, GPIO.HIGH)
+                GPIO.output(GPIO_RIGHT_A, GPIO.HIGH)
+                GPIO.output(GPIO_LEFT_B, GPIO.LOW)
+                GPIO.output(GPIO_RIGHT_B, GPIO.LOW)
+            elif cmd == b'2':
+                # Reverse
+                GPIO.output(GPIO_LEFT_B, GPIO.HIGH)
+                GPIO.output(GPIO_RIGHT_B, GPIO.HIGH)
+                GPIO.output(GPIO_LEFT_A, GPIO.LOW)
+                GPIO.output(GPIO_RIGHT_A, GPIO.LOW)
+            elif cmd == b'3':
+                # Right
+                GPIO.output(GPIO_LEFT_A, GPIO.HIGH)
+                GPIO.output(GPIO_RIGHT_A, GPIO.LOW)
+                GPIO.output(GPIO_LEFT_B, GPIO.LOW)
+                GPIO.output(GPIO_RIGHT_B, GPIO.LOW)
+            elif cmd == b'4':
+                # Left
+                GPIO.output(GPIO_LEFT_A, GPIO.LOW)
+                GPIO.output(GPIO_RIGHT_A, GPIO.HIGH)
+                GPIO.output(GPIO_LEFT_B, GPIO.LOW)
+                GPIO.output(GPIO_RIGHT_B, GPIO.LOW)
+            elif cmd == b'0':
+                # STop
+                GPIO.output(GPIO_LEFT_A, GPIO.LOW)
+                GPIO.output(GPIO_RIGHT_A, GPIO.LOW)
+                GPIO.output(GPIO_LEFT_B, GPIO.LOW)
+                GPIO.output(GPIO_RIGHT_B, GPIO.LOW)
 
             # Här lägger du till styrlogik, t.ex.:
             # if cmd == b'1':
@@ -26,6 +62,14 @@ def listen_for_commands(cmd_socket):
     finally:
         cmd_socket.close()
         print("Command socket closed.")
+
+# List of GPIO pins used
+gpio_pins = [GPIO_LEFT_A, GPIO_LEFT_B, GPIO_RIGHT_A, GPIO_RIGHT_B]
+
+# Setup GPIO
+GPIO.setmode(GPIO.BCM)  # Use BCM numbering
+for pin in gpio_pins:
+    GPIO.setup(pin, GPIO.OUT)
 
 # ========== VIDEOSTREAM ==========
 # Skapa TCP/IP-socket för videoström
@@ -56,7 +100,7 @@ try:
 
     stream = io.BytesIO()
     start_time = time.time()
-    duration = 30  # sekunder
+    duration = 60*120  # sekunder
 
     while time.time() - start_time < duration:
         stream.seek(0)
@@ -80,3 +124,4 @@ finally:
     connection.close()
     client_socket.close()
     cmd_socket.close()
+    GPIO.cleanup()
