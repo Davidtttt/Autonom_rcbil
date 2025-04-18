@@ -1,4 +1,4 @@
-"""collect_training_data.py: Collects the training images and classifies them based
+"""collect_data.py: Collects the training images and classifies them based
 on the user car control"""
 
 import cv2
@@ -14,19 +14,27 @@ import sys
 
 class CollectData(object):
     def __init__(self):
+        # Create directories for saved data and images
+        if not os.path.exists('data_set'):
+            os.makedirs('data_set')
+        if not os.path.exists('collected_images'):
+            os.makedirs('collected_images')
+            
         # Videostream (kamera från Raspberry Pi)
         self.sock = socket.socket()
         self.sock.bind(('0.0.0.0', 8000))  # För video
         self.sock.listen(1)
+        print("Waiting for Raspberry Pi video connection...")
         self.connection = self.sock.accept()[0].makefile('rb')
+        print("Raspberry Pi video connected.")
 
         # Kontrollsocket – Raspberry Pi ansluter hit
         self.cmd_server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.cmd_server_socket.bind(('0.0.0.0', 8001))  # Lyssna på kommandon
         self.cmd_server_socket.listen(1)
-        print("Väntar på anslutning från Raspberry Pi för styrkommandon...")
+        print("Waiting for Raspberry Pi control connection...")
         self.cmd_connection, _ = self.cmd_server_socket.accept()
-        print("Raspberry Pi ansluten för styrkommandon.")
+        print("Raspberry Pi control connected.")
 
         self.send_instr = True
 
@@ -46,7 +54,7 @@ class CollectData(object):
         total_frames = 0
         start_time = cv2.getTickCount()
 
-        print('Startar datainsamling...')
+        print('Starting data collection...')
         image_array = np.zeros((1, 38400), 'float')
         label_array = np.zeros((1, 4), 'float')
 
@@ -160,13 +168,13 @@ class CollectData(object):
                 print(e)
 
             end_time = cv2.getTickCount()
-            duration = end_time - start_time // cv2.getTickFrequency()
-            print("Streaming duration: {0}".format(duration))
-            print(image_array.shape)
-            print(label_array.shape)
-            print("Total frames: {0}".format(total_frames))
-            print("Saved frames: {0}".format(saved_frames))
-            print("Dropped frames: {0}".format(total_frames - saved_frames))
+            duration = (end_time - start_time) / cv2.getTickFrequency()
+            print("Streaming duration: {0} seconds".format(duration))
+            print(f"Image array shape: {image_array.shape}")
+            print(f"Label array shape: {label_array.shape}")
+            print(f"Total frames: {total_frames}")
+            print(f"Saved frames: {saved_frames}")
+            print(f"Dropped frames: {total_frames - saved_frames}")
 
         finally:
             self.connection.close()
