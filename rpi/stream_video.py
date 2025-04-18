@@ -7,10 +7,10 @@ from picamera2 import Picamera2
 from utils import server_address, command_address  # Lägg till command_address t.ex. ('192.168.X.X', 8001)
 import RPi.GPIO as GPIO
 
-GPIO_RIGHT_A = 24
-GPIO_RIGHT_B = 23
-GPIO_LEFT_A = 25
-GPIO_LEFT_B = 27
+GPIO_RIGHT_A = 25
+GPIO_RIGHT_B = 27
+GPIO_LEFT_A = 24
+GPIO_LEFT_B = 23
 
 # ========== FUNKTION: Kör kommandomottagare ==========
 def listen_for_commands(cmd_socket):
@@ -32,13 +32,13 @@ def listen_for_commands(cmd_socket):
                 GPIO.output(GPIO_RIGHT_B, GPIO.HIGH)
                 GPIO.output(GPIO_LEFT_A, GPIO.LOW)
                 GPIO.output(GPIO_RIGHT_A, GPIO.LOW)
-            elif cmd == b'3':
+            elif cmd == b'3' or cmd == b'5':
                 # Right
                 GPIO.output(GPIO_LEFT_A, GPIO.HIGH)
                 GPIO.output(GPIO_RIGHT_A, GPIO.LOW)
                 GPIO.output(GPIO_LEFT_B, GPIO.LOW)
                 GPIO.output(GPIO_RIGHT_B, GPIO.LOW)
-            elif cmd == b'4':
+            elif cmd == b'4' or cmd == b'6':
                 # Left
                 GPIO.output(GPIO_LEFT_A, GPIO.LOW)
                 GPIO.output(GPIO_RIGHT_A, GPIO.HIGH)
@@ -100,7 +100,7 @@ try:
 
     stream = io.BytesIO()
     start_time = time.time()
-    duration = 60*120  # sekunder
+    duration = 60*3  # sekunder
 
     while time.time() - start_time < duration:
         stream.seek(0)
