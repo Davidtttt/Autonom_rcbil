@@ -6,269 +6,174 @@ import cv2
 import numpy as np
 
 class ImagePreprocessor:
-    def __init__(self, image_height=240, image_width=320):
+    def __init__(self):
         """Initialize the image preprocessor with dimensions."""
-        self.image_height = image_height
-        self.image_width = image_width
         
-        # Band-pass filter parameters
-        self.lower_threshold = 36  # Filter out very dark pixels (shadows)
-        self.upper_threshold = 187  # Filter out very bright pixels (reflections)
-        
-    def preprocess(self, image, for_training=False):
-        """Main preprocessing function that applies all transformations.
+    def preprocess(self, image, output_type='default'):
+        """Unified preprocessing method for all use cases.
         
         Args:
-            image: Input grayscale image (full 240x320 camera image)
-            for_training: If True, returns flattened array for training
-        
+            image: Input grayscale image (full size 240x320)
+            output_type: 
+                'default': Returns processed image in original dimensions
+                'training': Returns flattened array for training
+                'display': Returns visualization for UI display
+                'prediction': Returns image formatted for model prediction
+                
         Returns:
-            Preprocessed image (rotated, cropped, enhanced contrast)
+            Processed image in the requested format
         """
         # Ensure image is grayscale
         if len(image.shape) > 2 and image.shape[2] > 1:
             image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+                        
+        # Validate image dimensions
+        if image.shape[0] < 240 or image.shape[1] < 320:
+            raise ValueError(f"Image dimensions {image.shape} are too small. Expected minimum dimensions of 240x320.")
             
-        # 1. Rotate the image 180 degrees (flip it upside down)
+        # Ensure image is uint8 type
+        if image.dtype != np.uint8:
+            if image.max() <= 1.0:
+                image = (image * 255).astype(np.uint8)
+            else:
+                image = image.astype(np.uint8)
+                
+        # Step 1: Rotate the image 180 degrees so line is in front of car
         rotated = cv2.rotate(image, cv2.ROTATE_180)
         
-        # 2. Take only the upper half after rotation (which was originally the lower half)
-        height = rotated.shape[0]
-        upper_half = rotated[0:height//2, :]
+        # Step 2: Take only bottom half - where the line should be
+        roi = rotated[120:240, :]
         
-        # 3. Apply high contrast filter for better line detection
-        enhanced = self.enhance_contrast(upper_half)
+        # Process image using the same approach as train_model.py
+        processed = self._enhance_line_detection(roi)
         
-        # For display and debugging
-        if not for_training:
-            # Show the steps for debugging
-            self.debug_display(image, rotated, upper_half, enhanced)
+        # Handle different output types
+        if output_type == 'training':
+            # For training: flatten and normalize
+            return processed.flatten().astype(np.float32) / 255.0
             
-            # Reshape for model prediction (add channel dimension)
-            return enhanced.reshape(1, height//2, self.image_width, 1).astype(np.float32) / 255.0
-        
-        # For training, flatten and normalize
-        return enhanced.flatten().astype(np.float32) / 255.0
+        elif output_type == 'prediction':
+            # For prediction: reshape with channel dimension
+            return processed.reshape(1, processed.shape[0], processed.shape[1], 1).astype(np.float32) / 255.0
+            
+        elif output_type == 'display':
+            # Create visualization of processing steps
+            return self._create_display_image(image, roi, processed)
+            
+        else:
+            # Default: just return the processed image
+            return processed
     
-    def preprocess_roi(self, roi_image, for_training=False):
-        """Process ROI images directly as they appear in the training data.
-        
-        Args:
-            roi_image: Input grayscale ROI image (120x320, lower half of camera view)
-            for_training: If True, returns flattened array for training
-            
-        Returns:
-            Preprocessed image
-        """
-        # Ensure image is grayscale
-        if len(roi_image.shape) > 2 and roi_image.shape[2] > 1:
-            roi_image = cv2.cvtColor(roi_image, cv2.COLOR_BGR2GRAY)
-            
-        # 1. Rotate the ROI image 180 degrees
-        rotated_roi = cv2.rotate(roi_image, cv2.ROTATE_180)
-        
-        # 2. Apply high contrast filter for better line detection
-        enhanced = self.enhance_contrast(rotated_roi)
-        
-        # For model prediction (add channel dimension) or return flattened
-        if not for_training:
-            return enhanced.reshape(1, roi_image.shape[0], roi_image.shape[1], 1).astype(np.float32) / 255.0
-        
-        # For training, flatten and normalize
-        return enhanced.flatten().astype(np.float32) / 255.0
-    
-    def enhance_contrast(self, image):
-        """Apply edge detection to identify the black line."""
-        # Ensure the image is uint8 type for edge detection
-        if image.dtype != np.uint8:
-            image = image.astype(np.uint8)
-        
+    def _enhance_line_detection(self, roi):
+        """Enhanced preprocessing focusing on line detection, matching final_model.py."""
         # 1. Apply Gaussian blur to reduce noise
-        blurred = cv2.GaussianBlur(image, (5, 5), 0)
+        blurred = cv2.GaussianBlur(roi, (5, 5), 0)
         
-        # Ensure blurred is uint8 type before Canny
-        if blurred.dtype != np.uint8:
-            blurred = blurred.astype(np.uint8)
+        # 2. Try several thresholding techniques and pick the best one
+        # Adaptive threshold
+        adaptive = cv2.adaptiveThreshold(
+            blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+            cv2.THRESH_BINARY_INV, 11, 2
+        )
         
-        # 2. Apply Canny edge detection
-        # Parameters: image, threshold1, threshold2
-        edges = cv2.Canny(blurred, 30, 98)
+        # Otsu's thresholding
+        _, otsu = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
         
-        # 3. Dilate the edges to make them more prominent
+        # Simple threshold
+        _, simple = cv2.threshold(blurred, 120, 255, cv2.THRESH_BINARY_INV)
+        
+        # Count white pixels in each method to determine best approach
+        adaptive_pixels = np.sum(adaptive == 255)
+        otsu_pixels = np.sum(otsu == 255)
+        simple_pixels = np.sum(simple == 255)
+        
+        # Choose the threshold with moderate number of pixels
+        # Too many or too few pixels are both problematic
+        if 500 < adaptive_pixels < 10000:
+            binary = adaptive
+        elif 500 < otsu_pixels < 10000:
+            binary = otsu
+        elif 500 < simple_pixels < 10000:
+            binary = simple
+        else:
+            # If all failed, use Canny edge detection
+            edges = cv2.Canny(blurred, 50, 150)
+            binary = edges
+        
+        # Apply morphological operations to remove noise and connect lines
         kernel = np.ones((3, 3), np.uint8)
-        dilated_edges = cv2.dilate(edges, kernel, iterations=1)
+        morphed = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel, iterations=1)
+        morphed = cv2.morphologyEx(morphed, cv2.MORPH_OPEN, kernel, iterations=1)
         
-        # 4. Create a mask to identify the line area (dark regions)
-        _, line_mask = cv2.threshold(blurred, 74, 255, cv2.THRESH_BINARY_INV)
+        # Find contours and draw only the largest ones
+        contours, _ = cv2.findContours(morphed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        line_mask = np.zeros_like(morphed)
         
-        # 5. Combine edge detection with line area for better line detection
-        combined = cv2.bitwise_or(dilated_edges, line_mask)
+        if contours:
+            # Sort contours by area, largest first
+            contours = sorted(contours, key=cv2.contourArea, reverse=True)
+            # Take only the largest contours
+            for contour in contours[:3]:
+                cv2.drawContours(line_mask, [contour], -1, 255, -1)
         
-        # 6. Clean up with morphological operations
-        # Fill small holes in the line
-        combined = cv2.morphologyEx(combined, cv2.MORPH_CLOSE, kernel, iterations=1)
+        # Check if the mask is empty and create a fallback
+        if np.sum(line_mask) == 0:
+            # Create a synthetic line as fallback
+            # Just add a vertical line in the middle
+            center_x = line_mask.shape[1] // 2
+            line_mask[:, center_x-5:center_x+5] = 255
         
-        # 7. Remove small noise
-        combined = cv2.morphologyEx(combined, cv2.MORPH_OPEN, kernel, iterations=1)
-        
-        return combined
+        return line_mask
     
-    def debug_display(self, original, rotated, upper_half, enhanced):
-        """Display intermediate preprocessing steps for debugging.
-        Only used in development, can be disabled in production."""
-        # Uncomment to enable debugging display
-        # cv2.imshow('Original', original)
-        # cv2.imshow('Rotated', rotated)
-        # cv2.imshow('Upper Half', upper_half)
-        # cv2.imshow('Edge Detection', enhanced)
-        # cv2.waitKey(1)
-        pass
+    def _create_display_image(self, original, roi, processed):
+        """Create visualization showing processing steps."""
+        # Create a visualization with original, ROI, and processed image
+        # to match the display from train_model.py
+        display_width = 1000
+        display_height = 240
+        
+        # Create display canvas (white background)
+        display = np.ones((display_height, display_width, 3), dtype=np.uint8) * 255
+        
+        # Convert grayscale images to color for display
+        original_color = cv2.cvtColor(original, cv2.COLOR_GRAY2BGR)
+        roi_color = cv2.cvtColor(roi, cv2.COLOR_GRAY2BGR)
+        processed_color = cv2.cvtColor(processed, cv2.COLOR_GRAY2BGR)
+        
+        # Calculate dimensions for display components
+        img_width = min(310, display_width // 3 - 20)
+        img_height = 230  # Fixed height to avoid broadcasting issues
+        
+        # Position the images in the display - use resize with exact dimensions
+        # Original
+        resized_original = cv2.resize(original_color, (img_width, img_height))
+        display[10:10+img_height, 10:10+img_width] = resized_original
+        cv2.putText(display, "Original", (10, img_height+20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
+        
+        # ROI - half height for bottom half of image
+        roi_height = img_height // 2
+        resized_roi = cv2.resize(roi_color, (img_width, roi_height))
+        display[10:10+roi_height, 20+img_width:20+2*img_width] = resized_roi
+        cv2.putText(display, "ROI", (20+img_width, roi_height+20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
+        
+        # Processed
+        resized_processed = cv2.resize(processed_color, (img_width, roi_height))
+        display[10:10+roi_height, 30+2*img_width:30+3*img_width] = resized_processed
+        cv2.putText(display, "Processed", (30+2*img_width, roi_height+20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
+        
+        return display
     
-    def preprocess_for_display(self, image):
-        """Preprocess the image for display purposes only."""
-        # Ensure image is grayscale
-        if len(image.shape) > 2 and image.shape[2] > 1:
-            image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-            
-        # Ensure image is uint8 type
-        if image.dtype != np.uint8:
-            image = image.astype(np.uint8)
-            
-        rotated = cv2.rotate(image, cv2.ROTATE_180)
-        height = rotated.shape[0]
-        upper_half = rotated[0:height//2, :]
+    def preprocess_batch(self, images, output_type='training'):
+        """Preprocess a batch of images.
         
-        # Apply blur as done in edge detection
-        blurred = cv2.GaussianBlur(upper_half, (5, 5), 0)
-        
-        # Ensure blurred is uint8 type before Canny
-        if blurred.dtype != np.uint8:
-            blurred = blurred.astype(np.uint8)
-        
-        # Apply Canny edge detection
-        edges = cv2.Canny(blurred, 30, 98)
-        
-        # Get final processed image
-        enhanced = self.enhance_contrast(upper_half)
-        
-        # Create a visual representation of the preprocessing steps
-        # Convert grayscale images to BGR for visualization
-        original_color = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
-        upper_half_color = cv2.cvtColor(upper_half, cv2.COLOR_GRAY2BGR)
-        edges_color = cv2.cvtColor(edges, cv2.COLOR_GRAY2BGR)
-        enhanced_color = cv2.cvtColor(enhanced, cv2.COLOR_GRAY2BGR)
-        
-        # Resize all images to the same height for display
-        display_height = 120
-        original_resized = cv2.resize(original_color, (int(original_color.shape[1] * display_height / original_color.shape[0]), display_height))
-        upper_half_resized = cv2.resize(upper_half_color, (int(upper_half_color.shape[1] * display_height / upper_half_color.shape[0]), display_height))
-        edges_resized = cv2.resize(edges_color, (int(edges_color.shape[1] * display_height / edges_color.shape[0]), display_height))
-        enhanced_resized = cv2.resize(enhanced_color, (int(enhanced_color.shape[1] * display_height / enhanced_color.shape[0]), display_height))
-        
-        # Create a blank canvas with labels
-        canvas_width = original_resized.shape[1] + upper_half_resized.shape[1] + edges_resized.shape[1] + enhanced_resized.shape[1] + 30
-        canvas = np.ones((display_height + 30, canvas_width, 3), dtype=np.uint8) * 255
-        
-        # Add images to canvas
-        x_offset = 0
-        canvas[15:15+display_height, x_offset:x_offset+original_resized.shape[1]] = original_resized
-        cv2.putText(canvas, "Original", (x_offset, 12), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
-        
-        x_offset += original_resized.shape[1] + 10
-        canvas[15:15+display_height, x_offset:x_offset+upper_half_resized.shape[1]] = upper_half_resized
-        cv2.putText(canvas, "Upper Half", (x_offset, 12), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
-        
-        x_offset += upper_half_resized.shape[1] + 10
-        canvas[15:15+display_height, x_offset:x_offset+edges_resized.shape[1]] = edges_resized
-        cv2.putText(canvas, "Edge Detection", (x_offset, 12), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
-        
-        x_offset += edges_resized.shape[1] + 10
-        canvas[15:15+display_height, x_offset:x_offset+enhanced_resized.shape[1]] = enhanced_resized
-        cv2.putText(canvas, "Final Image", (x_offset, 12), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
-        
-        return canvas
-    
-    def preprocess_roi_for_display(self, roi_image):
-        """Preprocess an ROI image for display purposes only."""
-        # Ensure image is grayscale
-        if len(roi_image.shape) > 2 and roi_image.shape[2] > 1:
-            roi_image = cv2.cvtColor(roi_image, cv2.COLOR_BGR2GRAY)
-        
-        # Ensure image is uint8 type
-        if roi_image.dtype != np.uint8:
-            roi_image = roi_image.astype(np.uint8)
-            
-        # Rotate the ROI image 180 degrees
-        rotated_roi = cv2.rotate(roi_image, cv2.ROTATE_180)
-        
-        # Apply blur as in the edge detection process
-        blurred = cv2.GaussianBlur(rotated_roi, (5, 5), 0)
-        
-        # Ensure blurred is uint8 type before Canny
-        if blurred.dtype != np.uint8:
-            blurred = blurred.astype(np.uint8)
-        
-        # Apply edge detection
-        edges = cv2.Canny(blurred, 30, 98)
-        
-        # Get final edge processed image
-        enhanced = self.enhance_contrast(rotated_roi)
-        
-        # Create a visual representation of the preprocessing steps
-        # Convert grayscale images to BGR for visualization
-        original_color = cv2.cvtColor(roi_image, cv2.COLOR_GRAY2BGR)
-        rotated_color = cv2.cvtColor(rotated_roi, cv2.COLOR_GRAY2BGR)
-        edges_color = cv2.cvtColor(edges, cv2.COLOR_GRAY2BGR)
-        enhanced_color = cv2.cvtColor(enhanced, cv2.COLOR_GRAY2BGR)
-        
-        # Resize all images to the same height for display
-        display_height = 120
-        original_resized = cv2.resize(original_color, (int(original_color.shape[1] * display_height / original_color.shape[0]), display_height))
-        rotated_resized = cv2.resize(rotated_color, (int(rotated_color.shape[1] * display_height / rotated_color.shape[0]), display_height))
-        edges_resized = cv2.resize(edges_color, (int(edges_color.shape[1] * display_height / edges_color.shape[0]), display_height))
-        enhanced_resized = cv2.resize(enhanced_color, (int(enhanced_color.shape[1] * display_height / enhanced_color.shape[0]), display_height))
-        
-        # Create a blank canvas with labels
-        canvas_width = original_resized.shape[1] + rotated_resized.shape[1] + edges_resized.shape[1] + enhanced_resized.shape[1] + 30
-        canvas = np.ones((display_height + 30, canvas_width, 3), dtype=np.uint8) * 255
-        
-        # Add images to canvas
-        x_offset = 0
-        canvas[15:15+display_height, x_offset:x_offset+original_resized.shape[1]] = original_resized
-        cv2.putText(canvas, "Original ROI", (x_offset, 12), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
-        
-        x_offset += original_resized.shape[1] + 10
-        canvas[15:15+display_height, x_offset:x_offset+rotated_resized.shape[1]] = rotated_resized
-        cv2.putText(canvas, "Rotated ROI", (x_offset, 12), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
-        
-        x_offset += rotated_resized.shape[1] + 10
-        canvas[15:15+display_height, x_offset:x_offset+edges_resized.shape[1]] = edges_resized
-        cv2.putText(canvas, "Edge Detection", (x_offset, 12), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
-        
-        x_offset += edges_resized.shape[1] + 10
-        canvas[15:15+display_height, x_offset:x_offset+enhanced_resized.shape[1]] = enhanced_resized
-        cv2.putText(canvas, "Final Image", (x_offset, 12), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
-        
-        return canvas
-    
-    def load_and_preprocess(self, image_path):
-        """Load and preprocess an image from file."""
-        image = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
-        return self.preprocess(image)
-    
-    def preprocess_batch(self, images):
-        """Preprocess a batch of images."""
-        return np.array([self.preprocess(img, for_training=True) for img in images])
-    
-    def preprocess_roi_batch(self, roi_images):
-        """Preprocess a batch of ROI images from training data."""
-        return np.array([self.preprocess_roi(img, for_training=True) for img in roi_images])
-    
-    def set_filter_thresholds(self, lower=30, upper=220):
-        """Adjust the band-pass filter thresholds."""
-        self.lower_threshold = lower  # Filter out very dark pixels (shadows)
-        self.upper_threshold = upper  # Filter out very bright pixels (reflections)
-        print(f"Band-pass filter thresholds set to: {lower}-{upper}")
+        Args:
+            images: List or array of input images
+            output_type: The output format needed ('training', 'prediction', 'display', 'default')
+                
+        Returns:
+            Array of processed images in the requested format
+        """
+        return np.array([self.preprocess(img, output_type=output_type) for img in images])
     
 def reshape_for_model(flattened_images, height=120, width=320):
     """Reshape flattened images for CNN input."""

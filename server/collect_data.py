@@ -10,6 +10,7 @@ from pygame.locals import *
 import time
 import os
 import sys
+from image_preprocessing import ImagePreprocessor
 
 
 class CollectData(object):
@@ -19,6 +20,9 @@ class CollectData(object):
             os.makedirs('data_set')
         if not os.path.exists('collected_images'):
             os.makedirs('collected_images')
+            
+        # Initialize image preprocessor
+        self.preprocessor = ImagePreprocessor()
             
         # Videostream (kamera från Raspberry Pi)
         self.sock = socket.socket()
@@ -55,7 +59,9 @@ class CollectData(object):
         start_time = cv2.getTickCount()
 
         print('Starting data collection...')
-        image_array = np.zeros((1, 38400), 'float')
+        # Calculate the size of the full image for the flattened array
+        full_image_size = 240*320
+        image_array = np.zeros((1, full_image_size), 'float')
         label_array = np.zeros((1, 4), 'float')
 
         try:
@@ -72,10 +78,34 @@ class CollectData(object):
                 recv_bytes += self.connection.read(image_len)
                 image = cv2.imdecode(np.frombuffer(recv_bytes, dtype=np.uint8), cv2.IMREAD_GRAYSCALE)
 
-                # ROI – nedre halvan av bilden
-                roi = image[120:240, :]
-                cv2.imshow('Video', roi)
-                temp_array = roi.reshape(1, 38400).astype(np.float32)
+                # Get ROI for display purposes only
+                roi = self.preprocessor.preprocess(image, output_type='default')
+                
+                # Create display with original and processed images
+                # Create simple display with labels
+                display = np.zeros((roi.shape[0] + 30, roi.shape[1] * 2, 3), dtype=np.uint8)
+                
+                # Get visualization from preprocessor
+                vis_display = self.preprocessor.preprocess(image, output_type='display')
+                
+                # Show the visualization
+                cv2.imshow('Processing Steps', vis_display)
+                
+                # Convert roi to BGR for main display
+                roi_bgr = cv2.cvtColor(roi, cv2.COLOR_GRAY2BGR)
+                
+                # Add to display (just showing the processed ROI now)
+                display[30:, :roi.shape[1]] = roi_bgr
+                
+                # Add labels
+                cv2.putText(display, "Processed ROI (display only)", (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
+                
+                # Display
+                cv2.imshow('ROI View', display)
+                
+                # Flatten the full image for training data
+                # Normalize the image to float values between 0 and 1
+                temp_array = image.reshape(1, full_image_size).astype(np.float32) / 255.0
 
                 frame += 1
                 total_frames += 1

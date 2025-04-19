@@ -1,0 +1,3 @@
+0: Left (original class 0)
+1: Right (original class 1)
+2: Forward (original class 2)

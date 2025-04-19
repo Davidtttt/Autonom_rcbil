@@ -7,7 +7,7 @@ This project implements an autonomous RC car using machine learning. The system 
 The system consists of four main components:
 
 1. **Data Collection** - Collect training data by manually driving the car.
-2. **Data Preprocessing** - Process images with rotation, cropping, and contrast enhancement.
+2. **Data Preprocessing** - Process images with rotation, cropping, and advanced line detection techniques.
 3. **Model Training** - Train a neural network model on the preprocessed data.
 4. **Autonomous Driving** - Use the trained model to drive the car autonomously.
 
@@ -32,22 +32,24 @@ pip install opencv-python numpy tensorflow matplotlib scikit-learn pygame
 - Python 3
 - picamera2
 - RPi.GPIO
-- Motor driver circuit (connected to GPIO pins)
 
 Install the required packages:
 ```bash
 pip install picamera2 RPi.GPIO
 ```
 
-## How to Use
-
-### 1. Setup the Hardware
+## Hardware Setup
 
 - Connect the Raspberry Pi to the RC car chassis.
-- Connect the motors to the GPIO pins as defined in `rpi/stream_video.py`.
+- Connect the motors to the GPIO pins as defined in `rpi/stream_video.py`:
+  - GPIO_RIGHT_A = 25
+  - GPIO_RIGHT_B = 27
+  - GPIO_LEFT_A = 24
+  - GPIO_LEFT_B = 23
+  - GPIO_SPEED = 22 (PWM pin)
 - Ensure the Raspberry Pi camera is properly connected.
 
-### 2. Configure Network Settings
+## Network Configuration
 
 Make sure the Raspberry Pi and the server computer are on the same network and can communicate with each other.
 
@@ -57,7 +59,7 @@ server_address = ('SERVER_IP_ADDRESS', 8000)
 command_address = ('SERVER_IP_ADDRESS', 8001)
 ```
 
-### 3. Collect Training Data
+## Data Collection
 
 1. Start the video stream and command receiver on the Raspberry Pi:
 ```bash
@@ -76,69 +78,61 @@ python server/collect_data.py
    - Right: Turn Right
    - Up+Left: Forward Left
    - Up+Right: Forward Right
+   - Down+Left: Reverse Left
+   - Down+Right: Reverse Right
    - X or Q: Exit
 
-The collected data will be saved in the `data_set` directory.
+The collected data will be saved in the `data_set` directory as NPZ files, and raw images will be stored in `collected_images`.
 
-### 4. Visualize and Analyze the Data
+## Image Preprocessing
 
-After collecting data, you can visualize it to ensure quality:
+The system uses specialized image preprocessing for line following:
 
-```bash
-python server/visualize_data.py
-```
+1. **Image Rotation**: Rotates the image 180 degrees to match the camera orientation.
+2. **ROI Selection**: Extracts the bottom half of the image where the line is expected.
+3. **Advanced Line Detection**: 
+   - Multiple thresholding techniques (adaptive, Otsu, and simple)
+   - Morphological operations to clean up noise
+   - Contour detection to focus on the largest line segments
+   - Fallback mechanisms when line detection fails
 
-This will:
-- Show sample images from each class
-- Demonstrate the preprocessing steps (rotation, cropping, high contrast filtering)
-- Display class distribution statistics
-- Generate visualization plots saved to the project directory
+The `ImagePreprocessor` class in `server/image_preprocessing.py` handles these operations.
 
-### 5. Tune Preprocessing Parameters
+## Visualizing Training Data
 
-The system includes an interactive tool to tune preprocessing parameters for optimal line detection:
-
-```bash
-python server/visualize_data.py --tune
-```
-
-You can also specify a specific image to use for tuning:
+You can visualize the collected data to ensure quality:
 
 ```bash
-python server/visualize_data.py --tune --image collected_images/frame00001.jpg
+python server/visualize_training_data.py
 ```
 
-This opens an interactive GUI with sliders to adjust:
-- Lower Threshold: filters out very dark pixels (shadows)
-- Upper Threshold: filters out very bright pixels (reflections)
-- Thresholding Value: controls the final binary threshold
+This will show sample images from each class and demonstrate the preprocessing steps.
 
-Press 's' to save your parameter settings, or 'q' to quit without saving.
+## Model Training
 
-### 6. Train the Model
-
-After collecting enough data and tuning preprocessing parameters, train the neural network model:
+After collecting enough data, train the neural network model:
 
 ```bash
 python server/train_model.py
 ```
 
 This will:
-- Load the collected data
-- Apply preprocessing (image rotation, cropping, and band-pass filtering)
-- Train a convolutional neural network for 200 epochs
-- Save the best model to the `models` directory
+- Load the collected data from the `data_set` directory
+- Apply preprocessing to the images
+- Create a balanced dataset across classes
+- Train a convolutional neural network with early stopping
+- Save the best model to the `server/models` directory as `model_best.h5`
 - Generate training history plots
 
-The script includes:
-- Learning rate scheduling
-- Early stopping to prevent overfitting
-- Model checkpointing to save the best model
-- Detailed evaluation metrics including a confusion matrix
+The model architecture includes:
+- Multiple convolutional layers with max pooling
+- Dropout layers to prevent overfitting
+- Dense layers with ReLU activation
+- Final softmax layer for classification
 
-### 7. Autonomous Driving
+## Autonomous Driving
 
-1. Start the video stream on the Raspberry Pi again:
+1. Start the video stream on the Raspberry Pi:
 ```bash
 python rpi/stream_video.py
 ```
@@ -149,22 +143,39 @@ python server/autonomous_drive.py
 ```
 
 The car will now drive autonomously based on the trained model. The script:
-- Shows both the original camera feed and the processed images
-- Applies command smoothing to prevent erratic movements
-- Displays prediction confidence for each command
+- Shows the original camera feed, ROI, and processed images
+- Uses command buffering to prevent erratic movements
+- Employs failsafe mechanisms for model loading errors
 - Press 'Q' to exit autonomous mode
 
-## Image Preprocessing
+## Project Structure
 
-The system uses specialized image preprocessing for line following:
+```
+├── collected_images/    # Raw training images
+├── data_set/            # Processed training data (NPZ files)
+├── logs/                # TensorBoard logs from training
+├── rpi/                 # Raspberry Pi code
+│   ├── stream_video.py  # Video streaming and motor control
+│   ├── takepic.py       # Utility for taking test pictures
+│   └── utils.py         # Network configuration
+├── server/              # Server-side code
+│   ├── autonomous_drive.py     # Autonomous driving script
+│   ├── collect_data.py         # Data collection script
+│   ├── image_preprocessing.py  # Image preprocessing utilities
+│   ├── models/                 # Saved neural network models
+│   ├── predict.py              # Prediction utilities
+│   ├── train_model.py          # Model training script
+│   └── visualize_training_data.py  # Data visualization tool
+└── utils/               # Additional utilities
+```
 
-1. **Image Rotation**: Rotates the image 180 degrees to match the camera orientation.
-2. **Upper Half Selection**: Takes only the upper half of the rotated image (which was originally the lower half).
-3. **Band-pass Filtering**: Filters out very dark areas (shadows) and very bright areas (reflections).
-4. **Contrast Enhancement**: Applies CLAHE (Contrast Limited Adaptive Histogram Equalization) for better feature visibility.
-5. **Binary Thresholding**: Converts the image to binary to isolate the track line.
+## Troubleshooting
 
-These preprocessing steps are shared between training and inference for consistency.
+- If the car is not responding to commands, check the GPIO connections.
+- If the video stream is not working, check the network configuration and camera connection.
+- If the model is not training properly, ensure you have enough diverse data.
+- If the car moves erratically during autonomous mode, try adjusting the motor speed in `rpi/stream_video.py`.
+- If you encounter model loading issues, the system will try alternative models. Check the console output for errors.
 
 ## Tips for Success
 
@@ -172,18 +183,14 @@ These preprocessing steps are shared between training and inference for consiste
 
 2. **Balanced Dataset**: Ensure you have a balanced number of examples for each command (forward, left, right, reverse).
 
-3. **Track Design**: Start with a simple track with clear boundaries and a high-contrast black line.
+3. **Track Design**: Start with a simple track with clear boundaries and a high-contrast line.
 
 4. **Lighting Conditions**: Try to maintain consistent lighting during data collection and autonomous driving.
 
 5. **Battery Power**: Ensure the Raspberry Pi and motors have sufficient power. Voltage drops can affect performance.
 
-6. **Preprocessing Tuning**: Use the interactive tuning tool to find optimal parameters for your specific track and lighting conditions. This is especially important if you have varying light conditions or shadows on your track.
+6. **Advanced Preprocessing**: The system uses multiple thresholding techniques and contour analysis to handle various lighting conditions.
 
-## Troubleshooting
+7. **Command Buffering**: The system uses buffering to smooth out commands and prevent erratic movements.
 
-- If the car is not responding to commands, check the GPIO connections.
-- If the video stream is not working, check the network configuration and camera connection.
-- If the model is not training properly, ensure you have enough diverse data.
-- If line detection is poor, use the parameter tuning tool to adjust the band-pass filter and threshold settings.
-- If the car moves erratically, try increasing the command buffer size for smoother transitions. 
+8. **Model Fallbacks**: If the primary model fails to load, the system will try alternative models. 

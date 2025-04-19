@@ -11,6 +11,49 @@ import os
 import sys
 from image_preprocessing import ImagePreprocessor, reshape_for_model
 from predict import Predictor
+import collections
+
+def load_model_safe(model_path):
+    """Safely load a model with better error handling."""
+    from tensorflow.keras.models import load_model
+    
+    if not os.path.exists(model_path):
+        print(f"Model not found at {model_path}")
+        return None
+    
+    try:
+        print(f"Attempting to load model from: {model_path}")
+        model = load_model(model_path)
+        if model is not None:
+            model.summary()
+            return model
+    except Exception as e:
+        print(f"Error loading model standard way: {e}")
+    
+    try:
+        print("Trying to load the model with compile=False...")
+        model = load_model(model_path, compile=False)
+        if model is not None:
+            model.summary()
+            return model
+    except Exception as e:
+        print(f"Error loading model with compile=False: {e}")
+    
+    # Try alternate model
+    alt_model_path = os.path.join(os.path.dirname(model_path), 
+                            'model_final.h5' if 'best' in model_path else 'model_best.h5')
+    if os.path.exists(alt_model_path):
+        try:
+            print(f"Trying alternate model: {alt_model_path}")
+            model = load_model(alt_model_path, compile=False)
+            if model is not None:
+                model.summary()
+                return model
+        except Exception as e:
+            print(f"Error loading alternate model: {e}")
+    
+    print("Failed to load any model!")
+    return None
 
 class AutonomousDrive:
     def __init__(self, model_path=None):
@@ -23,8 +66,18 @@ class AutonomousDrive:
         # Initialize the predictor with the model
         self.predictor = Predictor(model_path)
         
+        # Ensure we have a valid model
+        if hasattr(self.predictor, 'model') and self.predictor.model is None:
+            print("Predictor failed to load a model, trying safe loader...")
+            model = load_model_safe(model_path)
+            if model is not None:
+                self.predictor.model = model
+                print("Successfully loaded model with safe loader!")
+            else:
+                print("WARNING: Could not load any model. Autonomous driving will not work properly!")
+        
         # Initialize image preprocessor for display
-        self.preprocessor = ImagePreprocessor(image_height=240, image_width=320)
+        self.preprocessor = ImagePreprocessor()
         
         # Videostream (camera from Raspberry Pi)
         self.sock = socket.socket()
@@ -45,6 +98,12 @@ class AutonomousDrive:
         # Control variables
         self.autonomous_mode = True
         
+        # Buffer for storing raw frames for visualization
+        self.raw_frame_buffer = collections.deque(maxlen=10)  # Store original frames for display
+        
+        # Variable to store the previous command
+        self.previous_command = None
+        
         # Start autonomous driving
         self.drive()
 
@@ -59,7 +118,9 @@ class AutonomousDrive:
             # For displaying the processed image
             cv2.namedWindow('Original Image', cv2.WINDOW_NORMAL)
             cv2.namedWindow('Processed Images', cv2.WINDOW_NORMAL)
+            cv2.namedWindow('Previous Frame', cv2.WINDOW_NORMAL)
             cv2.resizeWindow('Processed Images', 1000, 240)
+            cv2.resizeWindow('Previous Frame', 320, 240)
             
             while self.autonomous_mode:
                 # Read a frame
@@ -71,36 +132,38 @@ class AutonomousDrive:
                 recv_bytes += self.connection.read(image_len)
                 original_image = cv2.imdecode(np.frombuffer(recv_bytes, dtype=np.uint8), cv2.IMREAD_GRAYSCALE)
                 
-                # Print original image dimensions for debugging
-                print(f"Original image dimensions: {original_image.shape}")
+                # Store the frame in our buffer
+                self.raw_frame_buffer.append(original_image.copy())
                 
-                # Extract ROI (lower half)
-                if original_image.shape[0] >= 240:
-                    roi = original_image[120:240, :]
-                else:
-                    roi = original_image
-                
-                # Ensure ROI has correct dimensions for the model
-                if roi.shape[0] != 120 or roi.shape[1] != 320:
-                    print(f"Resizing ROI from {roi.shape} to (120, 320)")
-                    roi = cv2.resize(roi, (320, 120))
-                
-                # Process the ROI for display (including all preprocessing steps)
-                processed_display = self.preprocessor.preprocess_roi_for_display(roi)
+                # Process the image using ImagePreprocessor, which now uses the same
+                # processing as train_model.py
+                processed_display = self.preprocessor.preprocess(original_image, output_type='display')
                 
                 # Display the original and processed frames
                 cv2.imshow('Original Image', original_image)
                 cv2.imshow('Processed Images', processed_display)
                 
-                # Predict command using predictor module
-                _, _, command = self.predictor.predict_image(original_image)
-                # If command is left/right, send forward+left/right instead
-                if command == b'4':  # Left command
-                    command = b'5'  # Forward+Left command
-                elif command == b'3':  # Right command
-                    command = b'6'  # Forward+Right command
-                # Send command to Raspberry Pi
-                self.cmd_connection.send(command)
+                # Display previous frame if available (for visualization of temporal data)
+                if len(self.raw_frame_buffer) > 1:
+                    prev_frame = self.raw_frame_buffer[-2]
+                    prev_processed = self.preprocessor.preprocess(prev_frame, output_type='display')
+                    cv2.imshow('Previous Frame', prev_processed)
+                
+                try:
+                    # Predict command using predictor module
+                    # The predictor.predict_image method handles the temporal data internally
+                    # and uses the preprocessor for image preparation
+                    _, command_index, command = self.predictor.predict_image(original_image)
+                    
+                    # Send command to Raspberry Pi only if different from previous command
+                    if command != self.previous_command:
+                        self.cmd_connection.send(command)
+                        self.previous_command = command
+                        print(f"Sent new command: {command}")
+                except Exception as e:
+                    print(f"Error during prediction: {e}")
+                    # If there's an error, send stop command
+                    self.cmd_connection.send(b'0')
                 
                 frame_count += 1
                 

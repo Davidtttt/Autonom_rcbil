@@ -6,171 +6,79 @@ import numpy as np
 import os
 import tensorflow as tf
 from image_preprocessing import ImagePreprocessor
+import collections
+import cv2
+from tensorflow.keras.models import load_model
 
 class Predictor:
-    def __init__(self, model_path='models/model_best.h5'):
-        """Initialize the predictor with the trained model."""
-        # Load the trained model
-        if model_path is not None:
-            if not os.path.exists(model_path):
-                raise FileNotFoundError(f"Model file not found: {model_path}. Run train_model.py first.")
-            
-            self.model = tf.keras.models.load_model(model_path)
-            print(f"Model loaded: {model_path}")
-        else:
-            # Model will be set externally
-            self.model = None
-            print("Predictor initialized without a model. Use predictor.model = model to set a model.")
-        
-        # Initialize image preprocessor
-        self.preprocessor = ImagePreprocessor(image_height=240, image_width=320)
-        
-        # Class names for prediction output
-        self.class_names = ['LEFT', 'RIGHT', 'FORWARD', 'REVERSE']
-        
-        # Mapping from prediction index to command
-        self.commands = {
-            0: b'4',  # Left
-            1: b'3',  # Right
-            2: b'1',  # Forward
-            3: b'2',  # Reverse
-        }
-        
-        # Initialize a buffer for smoothing commands
-        self.command_buffer = []
-        self.buffer_size = 3  # Number of frames to average
-    
-    def predict_image(self, image, smooth=True, verbose=True):
-        """Predict the driving command based on the image.
+    def __init__(self, model_path, num_frames=1):
+        """Initialize the predictor with a trained model.
         
         Args:
-            image: Input grayscale image (full image or ROI)
-            smooth: Whether to use command smoothing to prevent rapid changes
-            verbose: Whether to print prediction details
-            
-        Returns:
-            Tuple of (command_index, confidence, command_byte)
+            model_path: Path to the model file
+            num_frames: Number of frames to use for prediction (default: 1)
         """
-        # Extract ROI from the camera image (lower half) if needed
-        if image.shape[0] >= 240:
-            roi = image[120:240, :]
+        print(f"Loading model from: {model_path}")
+        self.model = None
+        self.num_frames = 1  # Always use single-frame model
+        self.frame_buffer = collections.deque(maxlen=10)  # Fixed: Initialize frame buffer
+        
+        # Try to load the model with multiple fallback options
+        try:
+            self.model = load_model(model_path)
+        except Exception as e:
+            print(f"Error loading model: {e}")
+            try:
+                self.model = load_model(model_path, compile=False)
+            except Exception:
+                # Try alternate model file
+                dir_path = os.path.dirname(model_path)
+                alt_file = 'model_final.h5' if os.path.basename(model_path) == 'model_best.h5' else 'model_best.h5'
+                alt_path = os.path.join(dir_path, alt_file)
+                
+                if os.path.exists(alt_path):
+                    try:
+                        self.model = load_model(alt_path, compile=False)
+                    except Exception:
+                        pass
+        
+        if self.model:
+            print("Model loaded successfully")
+            self.model.summary()
         else:
-            # If image is already ROI-sized, use as is
-            roi = image
-        
-        # Ensure the ROI dimensions match what the model expects (120x320)
-        if roi.shape[0] != 120 or roi.shape[1] != 320:
-            if verbose:
-                print(f"Resizing ROI from {roi.shape} to (120, 320)")
-            roi = cv2.resize(roi, (320, 120))
-        
-        # Preprocess the ROI to match the expected input format
-        processed = self.preprocessor.preprocess_roi(roi, for_training=False)
-        
-        # Model prediction
-        prediction = self.model.predict(processed, verbose=0)[0]
-        
-        # Get the index of the highest probability
-        command_index = np.argmax(prediction)
-        confidence = prediction[command_index]
-        
-        if smooth:
-            # Add to command buffer for smoothing
-            self.command_buffer.append((command_index, confidence))
-            if len(self.command_buffer) > self.buffer_size:
-                self.command_buffer.pop(0)
+            print("Failed to load any model")
             
-            # Implement simple command smoothing (prevent rapid switching)
-            if len(self.command_buffer) >= self.buffer_size:
-                # Count occurrences of each command in the buffer
-                command_counts = {}
-                for cmd, conf in self.command_buffer:
-                    if cmd not in command_counts:
-                        command_counts[cmd] = 0
-                    command_counts[cmd] += 1
-                
-                # Get the most frequent command
-                most_frequent_cmd = max(command_counts, key=command_counts.get)
-                
-                # Only change command if it's consistently predicted
-                if command_counts[most_frequent_cmd] >= self.buffer_size // 2 + 1:
-                    command_index = most_frequent_cmd
+        # Create image preprocessor
+        self.preprocessor = ImagePreprocessor()
         
-        # Map to command byte
-        command = self.commands[command_index]
-        
-        # Print the prediction with confidence if verbose
-        if verbose:
-            print(f"Predicted: {self.class_names[command_index]} (Confidence: {confidence:.4f})")
-        
-        return command_index, confidence, command
+        # Command mapping
+        self.commands = [b'4', b'3', b'1', b'2']  # Left, Right, Forward, Reverse
     
-    def predict_without_preprocessing(self, processed_image, smooth=True, verbose=True):
-        """Make prediction on an already preprocessed image.
+    def predict_image(self, image):
+        """Predict the driving command from a single image."""
+        if self.model is None:
+            return [[0.25, 0.25, 0.25, 0.25]], 2, b'1'  # Default to forward
         
-        Used when the preprocessing has already been done (e.g., in training data).
+        processed = self.preprocessor.preprocess(image, output_type='prediction')
+        predictions = self.model.predict(processed)
+        predicted_class = np.argmax(predictions[0])
+        command = self.commands[predicted_class] if predicted_class < len(self.commands) else b'0'
         
-        Args:
-            processed_image: Already preprocessed image ready for model input
-            smooth: Whether to use command smoothing
-            verbose: Whether to print prediction details
-            
-        Returns:
-            Tuple of (command_index, confidence, command_byte)
-        """
-        # Model prediction
-        prediction = self.model.predict(processed_image, verbose=0)[0]
-        
-        # Get the index of the highest probability
-        command_index = np.argmax(prediction)
-        confidence = prediction[command_index]
-        
-        if smooth:
-            # Add to command buffer for smoothing
-            self.command_buffer.append((command_index, confidence))
-            if len(self.command_buffer) > self.buffer_size:
-                self.command_buffer.pop(0)
-            
-            # Implement simple command smoothing (prevent rapid switching)
-            if len(self.command_buffer) >= self.buffer_size:
-                # Count occurrences of each command in the buffer
-                command_counts = {}
-                for cmd, conf in self.command_buffer:
-                    if cmd not in command_counts:
-                        command_counts[cmd] = 0
-                    command_counts[cmd] += 1
-                
-                # Get the most frequent command
-                most_frequent_cmd = max(command_counts, key=command_counts.get)
-                
-                # Only change command if it's consistently predicted
-                if command_counts[most_frequent_cmd] >= self.buffer_size // 2 + 1:
-                    command_index = most_frequent_cmd
-        
-        # Map to command byte
-        command = self.commands[command_index]
-        
-        # Print the prediction with confidence if verbose
-        if verbose:
-            print(f"Predicted: {self.class_names[command_index]} (Confidence: {confidence:.4f})")
-        
-        return command_index, confidence, command
-    
-    def reset_buffer(self):
-        """Reset the command buffer for a fresh start."""
-        self.command_buffer = []
+        return predictions, predicted_class, command
 
 
 # For importing
-import cv2  # This was missing in the function calls above
-
-def load_model(model_path='models/model_best.h5'):
+def load_model(model_path=None):
     """Load a trained model if available.
     
     Convenience function for scripts that don't need the full Predictor class.
     """
+    if model_path is None:
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        model_path = os.path.join(script_dir, 'models', 'model_best.h5')
+        
     if not os.path.exists(model_path):
-        print(f"Model not found at {model_path}. Will not show predictions.")
+        print(f"Model not found at {model_path}")
         return None
     
     try:
@@ -179,4 +87,9 @@ def load_model(model_path='models/model_best.h5'):
         return model
     except Exception as e:
         print(f"Error loading model: {e}")
-        return None 
+        try:
+            model = tf.keras.models.load_model(model_path, compile=False)
+            print(f"Loaded model with compile=False")
+            return model
+        except Exception:
+            return None 
