@@ -11,6 +11,7 @@ GPIO_RIGHT_A = 25
 GPIO_RIGHT_B = 27
 GPIO_LEFT_A = 24
 GPIO_LEFT_B = 23
+GPIO_SPEED = 22
 
 # ========== FUNKTION: Kör kommandomottagare ==========
 def listen_for_commands(cmd_socket):
@@ -26,31 +27,35 @@ def listen_for_commands(cmd_socket):
                 GPIO.output(GPIO_RIGHT_A, GPIO.HIGH)
                 GPIO.output(GPIO_LEFT_B, GPIO.LOW)
                 GPIO.output(GPIO_RIGHT_B, GPIO.LOW)
+                pwm.ChangeDutyCycle(50)
             elif cmd == b'2':
                 # Reverse
                 GPIO.output(GPIO_LEFT_B, GPIO.HIGH)
                 GPIO.output(GPIO_RIGHT_B, GPIO.HIGH)
                 GPIO.output(GPIO_LEFT_A, GPIO.LOW)
                 GPIO.output(GPIO_RIGHT_A, GPIO.LOW)
+                pwm.ChangeDutyCycle(50)
             elif cmd == b'3' or cmd == b'5':
                 # Right
                 GPIO.output(GPIO_LEFT_A, GPIO.HIGH)
                 GPIO.output(GPIO_RIGHT_A, GPIO.LOW)
                 GPIO.output(GPIO_LEFT_B, GPIO.LOW)
                 GPIO.output(GPIO_RIGHT_B, GPIO.LOW)
+                pwm.ChangeDutyCycle(40)
             elif cmd == b'4' or cmd == b'6':
                 # Left
                 GPIO.output(GPIO_LEFT_A, GPIO.LOW)
                 GPIO.output(GPIO_RIGHT_A, GPIO.HIGH)
                 GPIO.output(GPIO_LEFT_B, GPIO.LOW)
                 GPIO.output(GPIO_RIGHT_B, GPIO.LOW)
+                pwm.ChangeDutyCycle(40)
             elif cmd == b'0':
                 # STop
                 GPIO.output(GPIO_LEFT_A, GPIO.LOW)
                 GPIO.output(GPIO_RIGHT_A, GPIO.LOW)
                 GPIO.output(GPIO_LEFT_B, GPIO.LOW)
                 GPIO.output(GPIO_RIGHT_B, GPIO.LOW)
-
+                pwm.ChangeDutyCycle(0)
             # Här lägger du till styrlogik, t.ex.:
             # if cmd == b'1':
             #     motor_controller.forward()
@@ -63,6 +68,14 @@ def listen_for_commands(cmd_socket):
         cmd_socket.close()
         print("Command socket closed.")
 
+# Function to stop motors
+def stop_motors():
+    GPIO.output(GPIO_LEFT_A, GPIO.LOW)
+    GPIO.output(GPIO_RIGHT_A, GPIO.LOW)
+    GPIO.output(GPIO_LEFT_B, GPIO.LOW)
+    GPIO.output(GPIO_RIGHT_B, GPIO.LOW)
+    print("[MOTORS] Motors stopped")
+
 # List of GPIO pins used
 gpio_pins = [GPIO_LEFT_A, GPIO_LEFT_B, GPIO_RIGHT_A, GPIO_RIGHT_B]
 
@@ -70,6 +83,11 @@ gpio_pins = [GPIO_LEFT_A, GPIO_LEFT_B, GPIO_RIGHT_A, GPIO_RIGHT_B]
 GPIO.setmode(GPIO.BCM)  # Use BCM numbering
 for pin in gpio_pins:
     GPIO.setup(pin, GPIO.OUT)
+    GPIO.output(pin, GPIO.LOW)
+
+GPIO.setup(GPIO_SPEED, GPIO.OUT)
+pwm = GPIO.PWM(GPIO_SPEED, 100) # 100 Hz
+pwm.start(50)  # 50% duty cycle
 
 # ========== VIDEOSTREAM ==========
 # Skapa TCP/IP-socket för videoström
@@ -101,8 +119,24 @@ try:
     stream = io.BytesIO()
     start_time = time.time()
     duration = 60*3  # sekunder
+    
+    # Frame rate control - max 10 FPS
+    max_fps = 10
+    min_frame_time = 1.0 / max_fps
+    last_frame_time = time.time()
 
     while time.time() - start_time < duration:
+        # Calculate time since last frame
+        current_time = time.time()
+        elapsed = current_time - last_frame_time
+        
+        # If we're running faster than our max FPS, sleep to maintain the rate
+        if elapsed < min_frame_time:
+            time.sleep(min_frame_time - elapsed)
+            
+        # Reset for next frame
+        last_frame_time = time.time()
+        
         stream.seek(0)
         stream.truncate()
 
@@ -119,8 +153,13 @@ try:
     connection.write(struct.pack('<L', 0))
     connection.flush()
 
+except KeyboardInterrupt:
+    print("\n[INTERRUPT] Ctrl+C detected")
+    stop_motors()
+
 finally:
     print('[SHUTDOWN] Closing connections...')
+    stop_motors()
     connection.close()
     client_socket.close()
     cmd_socket.close()
