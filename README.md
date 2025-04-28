@@ -193,4 +193,15 @@ The car will now drive autonomously based on the trained model. The script:
 
 7. **Command Buffering**: The system uses buffering to smooth out commands and prevent erratic movements.
 
-8. **Model Fallbacks**: If the primary model fails to load, the system will try alternative models. 
+8. **Model Fallbacks**: If the primary model fails to load, the system will try alternative models.
+
+## Testvideor och demonstration
+
+För att se hur den autonoma RC-bilen presterar i praktiska tester, se följande YouTube-spellista:
+
+[Se testvideor på YouTube](https://www.youtube.com/playlist?list=PLNgUisNxYCkehK0PDd65EGN7uCtbpyE4H)
+
+Spellistan innehåller:
+- Körning på hinderbana
+- Reaktion på oväntade hinder
+- Jämförelse mellan manuell styrning och autonom styrning
